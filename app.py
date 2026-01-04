@@ -57,6 +57,7 @@ SUBSPECIALTY_BUCKETS = {
     "Maternity": ["Triage", "Labour Ward", "Postnatal", "High Risk", "Induction"],
     "ICU": ["Ventilation", "Step-down", "Sepsis Support", "Outreach", "Deterioration"],
 }
+
 def build_specialties():
     out = []
     out.extend(BASE_SPECIALTIES)
@@ -156,6 +157,7 @@ def seed_demo(n_patients=140):
     rng = np.random.default_rng(2026)
     now = datetime.utcnow()
 
+    # bedboard
     beds = []
     for trust in TRUSTS:
         for site in SITES:
@@ -224,6 +226,7 @@ def seed_demo(n_patients=140):
 
     patients = pd.DataFrame(pts)
 
+    # Meds
     meds_catalog = [
         ("Paracetamol","1g PO QDS"), ("Ibuprofen","400mg PO TDS"),
         ("Amoxicillin","500mg PO TDS"), ("Metformin","500mg PO BD"),
@@ -244,6 +247,7 @@ def seed_demo(n_patients=140):
             })
     meds = pd.DataFrame(meds)
 
+    # Labs
     labs = ["Hb","WBC","CRP","Na","K","Creatinine","Glucose","Troponin","Lactate","Ketones"]
     results = []
     for pid in patients["patient_id"]:
@@ -257,6 +261,7 @@ def seed_demo(n_patients=140):
             results.append({"patient_id": pid, "ts": ts.isoformat(), "test": lab, "value": value, "flag": flag})
     results = pd.DataFrame(results).sort_values(["patient_id","ts"], ascending=[True, False])
 
+    # Imaging
     modalities = ["XR","CT","MRI","US"]
     imaging = []
     for pid in patients["patient_id"]:
@@ -276,6 +281,7 @@ def seed_demo(n_patients=140):
             })
     imaging = pd.DataFrame(imaging)
 
+    # Appointments + theatre slots (synthetic)
     appts = []
     theatres = []
     for pid in patients["patient_id"]:
@@ -301,6 +307,79 @@ def seed_demo(n_patients=140):
     appts = pd.DataFrame(appts)
     theatres = pd.DataFrame(theatres)
 
+    # -----------------------------
+    # NEW: Allergies + Problems + Vitals (synthetic)
+    # -----------------------------
+    allergies_catalog = [
+        ("Penicillin", "Rash"),
+        ("Latex", "Anaphylaxis"),
+        ("Peanuts", "Anaphylaxis"),
+        ("NSAIDs", "Bronchospasm"),
+        ("Shellfish", "Hives"),
+        ("Contrast", "Reaction"),
+        ("None known", "—"),
+    ]
+
+    problems_catalog = [
+        "Hypertension", "Type 2 Diabetes", "COPD", "Asthma", "CKD", "AF", "IHD",
+        "Heart Failure", "Stroke/TIA", "Epilepsy", "Depression", "Anxiety",
+        "Osteoarthritis", "Cancer (hx)", "Obesity", "Frailty"
+    ]
+
+    allergies = []
+    problems = []
+    vitals = []
+
+    for pid in patients["patient_id"]:
+        # allergies (0-2, sometimes NKDA)
+        if rng.random() < 0.25:
+            allergies.append({"patient_id": pid, "allergen": "None known", "reaction": "—", "severity": "—"})
+        else:
+            for _ in range(int(rng.integers(0, 3))):
+                a, rct = allergies_catalog[int(rng.integers(0, len(allergies_catalog)-1))]
+                allergies.append({
+                    "patient_id": pid,
+                    "allergen": a,
+                    "reaction": rct,
+                    "severity": rng.choice(["Mild","Moderate","Severe"], p=[0.55,0.32,0.13])
+                })
+
+        # problems (2-6)
+        for _ in range(int(rng.integers(2, 7))):
+            problems.append({
+                "patient_id": pid,
+                "problem": rng.choice(problems_catalog),
+                "status": rng.choice(["Active","Resolved","History"], p=[0.70,0.10,0.20])
+            })
+
+        # vitals hourly last 48h
+        for h in range(48):
+            ts = (now - timedelta(hours=(47-h))).replace(minute=0, second=0, microsecond=0)
+            # Base by risk
+            risk = patients.loc[patients["patient_id"]==pid, "risk_flag"].iloc[0]
+            bump = 0
+            if risk == "High": bump = 0.3
+            if risk == "Critical": bump = 0.7
+
+            hr = max(30, float(rng.normal(82 + 18*bump, 10)))
+            rr = max(6, float(rng.normal(16 + 6*bump, 3)))
+            spo2 = float(np.clip(rng.normal(96 - 4*bump, 1.8), 75, 100))
+            temp = float(np.clip(rng.normal(36.8 + 1.0*bump, 0.35), 34.5, 41.0))
+            sbp = max(60, float(rng.normal(124 - 10*bump, 18)))
+
+            vitals.extend([
+                {"patient_id": pid, "ts": ts, "kind": "HR", "value": hr, "unit": "bpm"},
+                {"patient_id": pid, "ts": ts, "kind": "RR", "value": rr, "unit": "/min"},
+                {"patient_id": pid, "ts": ts, "kind": "SpO2", "value": spo2, "unit": "%"},
+                {"patient_id": pid, "ts": ts, "kind": "Temp", "value": temp, "unit": "C"},
+                {"patient_id": pid, "ts": ts, "kind": "SBP", "value": sbp, "unit": "mmHg"},
+            ])
+
+    allergies = pd.DataFrame(allergies)
+    problems = pd.DataFrame(problems)
+    vitals = pd.DataFrame(vitals)
+
+    # ED arrivals (context)
     ed = []
     hours = 14*24
     for trust in TRUSTS:
@@ -313,7 +392,8 @@ def seed_demo(n_patients=140):
     ed = pd.DataFrame(ed)
 
     return {"patients": patients, "bedboard": bedboard, "meds": meds, "results": results,
-            "imaging": imaging, "appts": appts, "theatres": theatres, "ed": ed}
+            "imaging": imaging, "appts": appts, "theatres": theatres, "ed": ed,
+            "allergies": allergies, "problems": problems, "vitals": vitals}
 
 init_state()
 DEMO = st.session_state["demo"]
@@ -568,7 +648,9 @@ with tabs[2]:
         c.metric("EDD", p["edd"])
         d.metric("Barrier", p["discharge_barriers"])
 
-        subtabs = st.tabs(["Meds","Results","Imaging","AI Copilot (safe demo)"])
+        # ✅ NEW tabs
+        subtabs = st.tabs(["Meds","Results","Imaging","Allergies","Problems","Vitals","AI Copilot (safe demo)"])
+
         with subtabs[0]:
             if role not in ["Clinician","Pharmacy","Manager"]:
                 st.warning("Role view: limited meds visibility.")
@@ -587,7 +669,63 @@ with tabs[2]:
                 st.dataframe(im[["date","modality","study","report_status","report_excerpt"]], use_container_width=True)
             st.info("Production: PACS/DICOM viewer integration + RBAC.")
 
+        # ✅ BLOCK 2 additions
         with subtabs[3]:
+            st.markdown("### Allergies")
+            al = DEMO.get("allergies", pd.DataFrame())
+            al = al[al["patient_id"]==pid] if not al.empty else al
+            if al.empty:
+                st.write("No allergies recorded (demo).")
+            else:
+                st.dataframe(al[["allergen","reaction","severity"]], use_container_width=True)
+
+        with subtabs[4]:
+            st.markdown("### Problem List")
+            pr = DEMO.get("problems", pd.DataFrame())
+            pr = pr[pr["patient_id"]==pid] if not pr.empty else pr
+            if pr.empty:
+                st.write("No problems recorded (demo).")
+            else:
+                st.dataframe(pr[["problem","status"]], use_container_width=True)
+
+        with subtabs[5]:
+            st.markdown("### Vitals (last 48h, demo)")
+            vt = DEMO.get("vitals", pd.DataFrame())
+            vt = vt[vt["patient_id"]==pid] if not vt.empty else vt
+            if vt.empty:
+                st.write("No vitals (demo).")
+            else:
+                vt = vt.copy()
+                vt["ts"] = pd.to_datetime(vt["ts"])
+                kind = st.selectbox("Vital", sorted(vt["kind"].unique().tolist()), key="vital_kind_pick")
+                sdf = vt[vt["kind"]==kind].sort_values("ts").set_index("ts")
+                st.line_chart(sdf["value"])
+                st.dataframe(sdf[["kind","value","unit"]], use_container_width=True, height=220)
+
+                latest = vt.sort_values("ts").groupby("kind").tail(1).set_index("kind")
+                hr = float(latest.loc["HR","value"]) if "HR" in latest.index else 80
+                rr = float(latest.loc["RR","value"]) if "RR" in latest.index else 16
+                spo2 = float(latest.loc["SpO2","value"]) if "SpO2" in latest.index else 96
+                temp = float(latest.loc["Temp","value"]) if "Temp" in latest.index else 36.8
+                sbp = float(latest.loc["SBP","value"]) if "SBP" in latest.index else 120
+
+                score = 0
+                score += 3 if rr >= 25 or rr <= 8 else (2 if rr >= 21 else (1 if rr >= 19 else 0))
+                score += 3 if spo2 <= 91 else (2 if spo2 <= 93 else (1 if spo2 <= 95 else 0))
+                score += 3 if temp >= 39.1 or temp <= 35.0 else (2 if temp >= 38.1 else (1 if temp <= 36.0 else 0))
+                score += 3 if sbp <= 90 or sbp >= 220 else (2 if sbp <= 100 else (1 if sbp <= 110 else 0))
+                score += 3 if hr <= 40 or hr >= 131 else (2 if hr >= 111 else (1 if hr >= 91 else 0))
+
+                st.metric("NEWS-like score (demo)", score)
+                if score >= 7:
+                    st.error("High risk (demo): urgent review.")
+                elif score >= 5:
+                    st.warning("Medium risk (demo): escalate to senior.")
+                else:
+                    st.success("Lower risk (demo).")
+
+        # ✅ Copilot moved to subtabs[6]
+        with subtabs[6]:
             st.write("This demo copilot is rule-based + redaction. Production AI requires IG controls and approval.")
             q = st.text_input("Ask", value="Summarise risks and next steps.", key="copilot_q")
             if st.button("Generate"):
@@ -621,7 +759,6 @@ Suggested next steps:
 # ---------------------------------------------------------
 with tabs[3]:
     st.subheader("Appointments & Theatres")
-    pid = st.session_state["selected_patient_id"]
     pts_site = DEMO["patients"][(DEMO["patients"]["trust"]==trust)&(DEMO["patients"]["site"]==site)][["patient_id"]]
     c1,c2 = st.columns(2)
     with c1:

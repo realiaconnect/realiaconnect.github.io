@@ -60,19 +60,15 @@ SUBSPECIALTY_BUCKETS = {
 def build_specialties():
     out = []
     out.extend(BASE_SPECIALTIES)
-    # Expand with subspecialties
     for k, subs in SUBSPECIALTY_BUCKETS.items():
         for s in subs:
             out.append(f"{k} — {s}")
-    # Add generic “service lines”
     for s in ["Diagnostics","Operations","Flow Hub","Discharge Team","Site Management","Bed Management","Theatres Management"]:
         out.append(s)
-    # Inflate to ~200+ with “Clinic/Pathway” variants
     variants = ["Pathway","Clinic","MDT","Ward Round","Hotline","Rapid Review","Virtual Ward"]
     for base in BASE_SPECIALTIES[:45]:
         for v in variants:
             out.append(f"{base} — {v}")
-    # Deduplicate
     out = list(dict.fromkeys(out))
     return out
 
@@ -131,7 +127,6 @@ BED_STATES = ["Occupied","Vacant","Cleaning","Blocked"]
 ROLES = ["Clinician","Ops","Pharmacy","Manager"]
 
 def redact_text(s: str) -> str:
-    # Simple demo redaction (not production-grade)
     s = re.sub(r"\bP\d{5}\b", "[PATIENT_ID]", s)
     s = re.sub(r"\b\d{3}\s\d{3}\s\d{4}\b", "[NHS_ID]", s)
     return s
@@ -161,7 +156,6 @@ def seed_demo(n_patients=140):
     rng = np.random.default_rng(2026)
     now = datetime.utcnow()
 
-    # bedboard
     beds = []
     for trust in TRUSTS:
         for site in SITES:
@@ -190,13 +184,12 @@ def seed_demo(n_patients=140):
         row_idx = occupied_idx[i]
         b = bedboard.loc[row_idx].to_dict()
 
-        # Specialty alignment
         if b["ward"] in ["Stroke","Neuro"]:
-            spec = rng.choice([s for s in SPECIALTIES if "Neuro" in s or "Stroke" in s or "Neurology" in s or "Epilepsy" in s] + ["Stroke","Neurology","Neurosurgery"])
+            spec = rng.choice([s for s in SPECIALTIES if ("Neuro" in s or "Stroke" in s or "Neurology" in s or "Epilepsy" in s)] + ["Stroke","Neurology","Neurosurgery"])
         elif b["ward"] == "Cardiology":
             spec = rng.choice([s for s in SPECIALTIES if "Cardio" in s] + ["Cardiology","Heart Failure"])
         elif b["ward"] == "Paediatrics":
-            spec = rng.choice([s for s in SPECIALTIES if "Paed" in s or "Peds" in s or "NICU" in s or "PICU" in s] + ["Paediatrics","PICU"])
+            spec = rng.choice([s for s in SPECIALTIES if ("Paed" in s or "Peds" in s or "NICU" in s or "PICU" in s)] + ["Paediatrics","PICU"])
         elif b["ward"] == "ICU":
             spec = rng.choice([s for s in SPECIALTIES if "ICU" in s] + ["ICU","Anaesthetics"])
         else:
@@ -208,6 +201,11 @@ def seed_demo(n_patients=140):
         edd = (admit + timedelta(days=float(np.clip(rng.normal(6, 3), 1, 18)))).date().isoformat()
 
         risk = rng.choice(["None","High","Critical"], p=[0.70,0.23,0.07])
+        barrier = rng.choice(
+            ["None","Awaiting imaging","Awaiting PT/OT","Awaiting meds","Awaiting social care","Awaiting consultant review"],
+            p=[0.28,0.18,0.14,0.12,0.16,0.12]
+        )
+
         pts.append({
             "patient_id": pid,
             "name": f"{rng.choice(first_names)} {rng.choice(last_names)}",
@@ -219,14 +217,13 @@ def seed_demo(n_patients=140):
             "risk_flag": risk,
             "admit_ts": admit.isoformat(timespec="minutes"),
             "edd": edd,
-            "discharge_barriers": rng.choice(["None","Awaiting imaging","Awaiting PT/OT","Awaiting meds","Awaiting social care","Awaiting consultant review"], p=[0.28,0.18,0.14,0.12,0.16,0.12]),
+            "discharge_barriers": barrier,
         })
         bedboard.loc[row_idx, "patient_id"] = pid
         bedboard.loc[row_idx, "edd"] = edd
 
     patients = pd.DataFrame(pts)
 
-    # Meds
     meds_catalog = [
         ("Paracetamol","1g PO QDS"), ("Ibuprofen","400mg PO TDS"),
         ("Amoxicillin","500mg PO TDS"), ("Metformin","500mg PO BD"),
@@ -247,7 +244,6 @@ def seed_demo(n_patients=140):
             })
     meds = pd.DataFrame(meds)
 
-    # Labs
     labs = ["Hb","WBC","CRP","Na","K","Creatinine","Glucose","Troponin","Lactate","Ketones"]
     results = []
     for pid in patients["patient_id"]:
@@ -256,13 +252,11 @@ def seed_demo(n_patients=140):
             ts = (now - timedelta(hours=int(rng.integers(2,240)))).replace(minute=0, second=0, microsecond=0)
             value = float(rng.normal(10, 3))
             flag = rng.choice(["Normal","High","Low","Critical"], p=[0.70,0.16,0.12,0.02])
-            # Make certain criticals more plausible
             if lab in ["Troponin","Lactate","K","Glucose","Ketones"] and rng.random() < 0.05:
                 flag = "Critical"
             results.append({"patient_id": pid, "ts": ts.isoformat(), "test": lab, "value": value, "flag": flag})
     results = pd.DataFrame(results).sort_values(["patient_id","ts"], ascending=[True, False])
 
-    # Imaging
     modalities = ["XR","CT","MRI","US"]
     imaging = []
     for pid in patients["patient_id"]:
@@ -282,7 +276,6 @@ def seed_demo(n_patients=140):
             })
     imaging = pd.DataFrame(imaging)
 
-    # Appointments + theatre slots (synthetic)
     appts = []
     theatres = []
     for pid in patients["patient_id"]:
@@ -308,7 +301,6 @@ def seed_demo(n_patients=140):
     appts = pd.DataFrame(appts)
     theatres = pd.DataFrame(theatres)
 
-    # ED arrivals (context)
     ed = []
     hours = 14*24
     for trust in TRUSTS:
@@ -342,7 +334,6 @@ def make_task(trust, title, severity, alert_key, guidance, owner_role="Ops", pay
         "guidance": guidance,
         "payload": payload or {}
     }
-    # basic dedupe by alert_key
     recent = [x for x in st.session_state["tasks"] if x["trust"]==trust and x["alert_key"]==alert_key and x["status"]=="OPEN"]
     if not recent:
         st.session_state["tasks"].insert(0, t)
@@ -351,12 +342,10 @@ def make_task(trust, title, severity, alert_key, guidance, owner_role="Ops", pay
     return False
 
 def run_autopilot(trust, site):
-    """Create tasks based on hospital signals (synthetic)."""
     created = 0
     pts = DEMO["patients"]
     bb = DEMO["bedboard"]
 
-    # Bed pressure
     bb_f = bb[(bb["trust"]==trust) & (bb["site"]==site)]
     occ = (bb_f["state"]=="Occupied").mean()
     if occ > 0.90:
@@ -365,7 +354,6 @@ def run_autopilot(trust, site):
                      {"occ": occ, "site": site, "playbook": ["Discharge-by-noon push", "Open escalation beds", "Daily safety huddle"]}):
             created += 1
 
-    # ICU critical staffing (synthetic based on ICU patients count + random fill)
     icu_count = pts[(pts["trust"]==trust) & (pts["site"]==site) & (pts["ward"]=="ICU")].shape[0]
     rng = np.random.default_rng(int(datetime.utcnow().strftime("%H"))+7)
     staffing_fill = float(np.clip(rng.normal(0.93 - (icu_count/250), 0.03), 0.70, 0.99))
@@ -375,7 +363,6 @@ def run_autopilot(trust, site):
                      "Manager", {"fill": staffing_fill, "icu_patients": icu_count, "site": site}):
             created += 1
 
-    # Critical labs not acknowledged (synthetic)
     r = DEMO["results"]
     crit = r.merge(pts[["patient_id","trust","site"]], on="patient_id", how="left")
     crit = crit[(crit["trust"]==trust)&(crit["site"]==site)&(crit["flag"]=="Critical")]
@@ -386,7 +373,6 @@ def run_autopilot(trust, site):
                      "Clinician", {"count": crit_count, "site": site}):
             created += 1
 
-    # Imaging pending risk
     im = DEMO["imaging"].merge(pts[["patient_id","trust","site"]], on="patient_id", how="left")
     pend = im[(im["trust"]==trust)&(im["site"]==site)&(im["report_status"]!="Reported")].shape[0]
     if pend > 30:
@@ -395,7 +381,6 @@ def run_autopilot(trust, site):
                      {"pending": pend, "site": site}):
             created += 1
 
-    # Discharge barriers
     barriers = pts[(pts["trust"]==trust)&(pts["site"]==site) & (pts["discharge_barriers"]!="None")].shape[0]
     if barriers > 55:
         if make_task(trust, "Discharge barriers high", "HIGH", f"discharge_barriers::{site}",
@@ -403,7 +388,7 @@ def run_autopilot(trust, site):
                      {"barriers": barriers, "site": site}):
             created += 1
 
-    return created, {"occ": occ, "icu_fill": staffing_fill, "crit": crit_count, "img_pending": pend, "barriers": barriers}
+    return created, {"occ": float(occ), "icu_fill": float(staffing_fill), "crit": int(crit_count), "img_pending": int(pend), "barriers": int(barriers)}
 
 # =========================================================
 # HELPERS
@@ -425,7 +410,6 @@ def patient_df_filtered(trust, site, ward="All", specialty="All", query=""):
     return df
 
 def board_pack_text(trust, site, role):
-    # Keep it text to avoid dependencies.
     bb = DEMO["bedboard"]
     pts = DEMO["patients"]
     bb_f = bb[(bb["trust"]==trust)&(bb["site"]==site)]
@@ -519,10 +503,14 @@ with tabs[1]:
     bb = DEMO["bedboard"][(DEMO["bedboard"]["trust"]==trust)&(DEMO["bedboard"]["site"]==site)].copy()
     if ward_pick != "All":
         bb = bb[bb["ward"]==ward_pick]
+
     pts = DEMO["patients"][["patient_id","name","specialty","risk_flag","edd","discharge_barriers"]]
     bb = bb.merge(pts, on="patient_id", how="left")
-    st.dataframe(bb[["ward","bay","bed","state","patient_id","name","specialty","risk_flag","edd","discharge_barriers","updated_ts"]],
-                 use_container_width=True, height=420)
+
+    # ✅ FIX: only select columns that exist (prevents KeyError)
+    cols = ["ward","bay","bed","state","patient_id","name","specialty","risk_flag","edd","discharge_barriers","updated_ts"]
+    cols = [c for c in cols if c in bb.columns]
+    st.dataframe(bb[cols], use_container_width=True, height=420)
 
     st.markdown("### Transfer patient (demo)")
     cA,cB,cC = st.columns(3)
@@ -547,7 +535,6 @@ with tabs[1]:
                 tgt_idx = tgt.index[0]
                 DEMO["bedboard"].loc[cur_idx, ["state","patient_id","edd","updated_ts"]] = ["Vacant", None, None, datetime.utcnow().isoformat(timespec="minutes")]
                 DEMO["bedboard"].loc[tgt_idx, ["state","patient_id","updated_ts"]] = ["Occupied", pid, datetime.utcnow().isoformat(timespec="minutes")]
-                # update patient location
                 DEMO["patients"].loc[DEMO["patients"]["patient_id"]==pid, ["ward","bed","bay","site"]] = [to_ward, to_bed, to_bed[:1], site]
                 audit("transfer", f"{pid} moved to {to_ward} {to_bed} ({trust}/{site})")
                 make_task(trust, f"Transfer executed (demo): {pid} -> {to_ward} {to_bed}", "INFO", f"transfer::{pid}", "Transfer recorded in synthetic bedboard.", owner_role="Ops")
@@ -635,13 +622,11 @@ Suggested next steps:
 with tabs[3]:
     st.subheader("Appointments & Theatres")
     pid = st.session_state["selected_patient_id"]
+    pts_site = DEMO["patients"][(DEMO["patients"]["trust"]==trust)&(DEMO["patients"]["site"]==site)][["patient_id"]]
     c1,c2 = st.columns(2)
     with c1:
         st.markdown("### Appointments (synthetic)")
-        ap = DEMO["appts"]
-        # show for site patients only
-        pts_site = DEMO["patients"][(DEMO["patients"]["trust"]==trust)&(DEMO["patients"]["site"]==site)][["patient_id"]]
-        ap = ap.merge(pts_site, on="patient_id", how="inner")
+        ap = DEMO["appts"].merge(pts_site, on="patient_id", how="inner")
         st.dataframe(ap[["patient_id","date","time","clinic","status"]].sort_values(["date","time"]),
                      use_container_width=True, height=330)
     with c2:
@@ -694,9 +679,15 @@ with tabs[5]:
 
     st.markdown("### Generate pathway task (demo)")
     if st.button("Create pathway task"):
-        created = make_task(trust, f"Pathway triggered: {pathway}", "HIGH", f"pathway::{pathway.lower()}::{site}",
-                            f"Trigger signals (demo): {', '.join(pw['signals'][:3])}…", owner_role="Clinician",
-                            payload={"pathway": pathway, "owners": pw["owners"], "actions": pw["actions"]})
+        created = make_task(
+            trust,
+            f"Pathway triggered: {pathway}",
+            "HIGH",
+            f"pathway::{pathway.lower()}::{site}",
+            f"Trigger signals (demo): {', '.join(pw['signals'][:3])}…",
+            owner_role="Clinician",
+            payload={"pathway": pathway, "owners": pw["owners"], "actions": pw["actions"]}
+        )
         if created:
             st.success("Task created.")
         else:
